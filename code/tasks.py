@@ -22,7 +22,7 @@ class NER(TokenClassificationTask):
     def read_examples_from_file(self, data_dir, mode: Union[Split, str]) -> List[InputExample]:
         if isinstance(mode, Split):
             mode = mode.value
-        file_path = os.path.join(data_dir, f"{mode}.txt")
+        file_path = os.path.join(data_dir, f"{mode if mode != 'dev' else 'valid'}.txt")
         guid_index = 1
         examples = []
         with open(file_path, encoding="utf-8") as f:

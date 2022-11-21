@@ -10,6 +10,8 @@ import time
 from argparse import Namespace
 
 import numpy as np
+from pytorch_lightning.callbacks import ModelCheckpoint
+from sklearn.metrics import precision_score, recall_score
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -17,9 +19,8 @@ from lightning_base import BaseTransformer, add_generic_args, generic_train
 from transformers import glue_compute_metrics as compute_metrics
 from transformers import glue_convert_examples_to_features as convert_examples_to_features
 from transformers import glue_output_modes
-from transformers import glue_processors as processors
-from transformers import glue_tasks_num_labels
 
+from custom_processor import CustomProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,8 @@ class GLUETransformer(BaseTransformer):
         if type(hparams) == dict:
             hparams = Namespace(**hparams)
         hparams.glue_output_mode = glue_output_modes[hparams.task]
-        num_labels = glue_tasks_num_labels[hparams.task]
+        self.custom_processor = CustomProcessor()
+        num_labels = len(self.custom_processor.get_labels())
 
         super().__init__(hparams, num_labels, self.mode)
 
@@ -55,20 +57,21 @@ class GLUETransformer(BaseTransformer):
     def prepare_data(self):
         "Called to initialize data. Use the call to construct features"
         args = self.hparams
-        processor = processors[args.task]()
-        self.labels = processor.get_labels()
+        self.labels = self.custom_processor.get_labels()
 
-        for mode in ["train", "dev"]:
+        for mode in ["train", "dev", "test"]:
             cached_features_file = self._feature_file(mode)
             if os.path.exists(cached_features_file) and not args.overwrite_cache:
                 logger.info("Loading features from cached file %s", cached_features_file)
             else:
                 logger.info("Creating features from dataset file at %s", args.data_dir)
-                examples = (
-                    processor.get_dev_examples(args.data_dir)
-                    if mode == "dev"
-                    else processor.get_train_examples(args.data_dir)
-                )
+                if mode == 'train':
+                    examples = self.custom_processor.get_train_examples(args.data_dir)
+                elif mode == 'dev':
+                    examples = self.custom_processor.get_dev_examples(args.data_dir)
+                elif mode == 'test':
+                    examples = self.custom_processor.get_test_examples(args.data_dir)
+
                 features = convert_examples_to_features(
                     examples,
                     self.tokenizer,
@@ -79,11 +82,8 @@ class GLUETransformer(BaseTransformer):
                 logger.info("Saving features into cached file %s", cached_features_file)
                 torch.save(features, cached_features_file)
 
-    def get_dataloader(self, mode: str, batch_size: int, shuffle: bool = False) -> DataLoader:
+    def get_dataloader(self, mode: str, batch_size: int, shuffle: bool=False) -> DataLoader:
         "Load datasets. Called after prepare data."
-
-        # We test on dev set to compare to benchmarks without having to submit to GLUE server
-        mode = "dev" if mode == "test" else mode
 
         cached_features_file = self._feature_file(mode)
         logger.info("Loading features from cached file %s", cached_features_file)
@@ -125,25 +125,35 @@ class GLUETransformer(BaseTransformer):
             preds = np.squeeze(preds)
 
         out_label_ids = np.concatenate([x["target"] for x in outputs], axis=0)
-        out_label_list = [[] for _ in range(out_label_ids.shape[0])]
-        preds_list = [[] for _ in range(out_label_ids.shape[0])]
 
         results = {**{"val_loss": val_loss_mean}, **compute_metrics(self.hparams.task, preds, out_label_ids)}
 
         ret = {k: v for k, v in results.items()}
         ret["log"] = results
-        return ret, preds_list, out_label_list
+        return ret, preds, out_label_ids
 
     def validation_epoch_end(self, outputs: list) -> dict:
         ret, preds, targets = self._eval_end(outputs)
+        f1, _, _ = self.calculate_f1_precision_recall(preds, targets)
         logs = ret["log"]
-        return {"val_loss": logs["val_loss"], "log": logs, "progress_bar": logs}
+        return {"f1": f1, "val_loss": logs["val_loss"], "log": logs, "progress_bar": logs}
 
     def test_epoch_end(self, outputs) -> dict:
         ret, predictions, targets = self._eval_end(outputs)
+        f1, _, _ = self.calculate_f1_precision_recall(predictions, targets)
         logs = ret["log"]
         # `val_loss` is the key returned by `self._eval_end()` but actually refers to `test_loss`
-        return {"avg_test_loss": logs["val_loss"], "log": logs, "progress_bar": logs}
+        return {"f1": f1, "avg_test_loss": logs["val_loss"], "log": logs, "progress_bar": logs}
+
+    def calculate_f1_precision_recall(self, predictions, targets):
+        with open(os.path.join(self.hparams.output_dir, "tmp_classification_hyps.txt"), "w") as predictions_file:
+            predictions_file.write("\n".join(str(prediction) for prediction in predictions))
+
+        precision = precision_score(targets, predictions)
+        recall = recall_score(targets, predictions)
+        f1 = 2 * precision * recall / (precision + recall)
+        print("precision, recall, f1:", precision, recall, f1)
+        return f1, precision, recall
 
     @staticmethod
     def add_model_specific_args(parser, root_dir):
@@ -174,6 +184,12 @@ class GLUETransformer(BaseTransformer):
             "--overwrite_cache", action="store_true", help="Overwrite the cached training and evaluation sets"
         )
 
+        parser.add_argument(
+            "--model_for_prediction",
+            default='',
+            type=str
+        )
+
         return parser
 
 
@@ -192,12 +208,27 @@ def main():
         os.makedirs(args.output_dir)
 
     model = GLUETransformer(args)
-    trainer = generic_train(model, args)
 
-    # Optionally, predict on dev set and write to output_dir
+    checkpoint_callback = ModelCheckpoint(
+        filepath=os.path.join(args.output_dir, '{epoch},{f1}'),
+        monitor='f1',
+        mode="max",
+        save_top_k=1,
+        period=0,
+    )
+
+    trainer = generic_train(model, args, checkpoint_callback=checkpoint_callback)
+
+    # Optionally, predict on test set and write to output_dir
     if args.do_predict:
-        checkpoints = list(sorted(glob.glob(os.path.join(args.output_dir, "checkpointepoch=*.ckpt"), recursive=True)))
+        if args.model_for_prediction:
+            checkpoints = [args.model_for_prediction]
+        else:
+            checkpoints = list(sorted(glob.glob(os.path.join(args.output_dir, "epoch=*.ckpt"), recursive=True)))
         model = model.load_from_checkpoint(checkpoints[-1])
+        model.hparams.data_dir = args.data_dir
+        model.hparams.output_dir = args.output_dir
+        model.hparams.overwrite_cache = args.overwrite_cache
         return trainer.test(model)
 
 

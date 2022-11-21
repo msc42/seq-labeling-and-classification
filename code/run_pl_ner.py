@@ -11,13 +11,14 @@ from importlib import import_module
 
 import numpy as np
 import torch
+from pytorch_lightning.callbacks import ModelCheckpoint
 from seqeval.metrics import accuracy_score, f1_score, precision_score, recall_score
 from torch.nn import CrossEntropyLoss
 from torch.utils.data import DataLoader, TensorDataset
 
 from lightning_base import BaseTransformer, add_generic_args, generic_train
+from repair_evaluator import calculate_correction_acc
 from utils_ner import TokenClassificationTask
-
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ class NERTransformer(BaseTransformer):
             )
         self.labels = self.token_classification_task.get_labels(hparams.labels)
         self.pad_token_label_id = CrossEntropyLoss().ignore_index
+
         super().__init__(hparams, len(self.labels), self.mode)
 
     def forward(self, **inputs):
@@ -90,7 +92,7 @@ class NERTransformer(BaseTransformer):
                 logger.info("Saving features into cached file %s", cached_features_file)
                 torch.save(features, cached_features_file)
 
-    def get_dataloader(self, mode: int, batch_size: int, shuffle: bool = False) -> DataLoader:
+    def get_dataloader(self, mode: int, batch_size: int, shuffle: bool=False) -> DataLoader:
         "Load datasets. Called after prepare data."
         cached_features_file = self._feature_file(mode)
         logger.info("Loading features from cached file %s", cached_features_file)
@@ -104,7 +106,8 @@ class NERTransformer(BaseTransformer):
             # HACK(we will not use this anymore soon)
         all_label_ids = torch.tensor([f.label_ids for f in features], dtype=torch.long)
         return DataLoader(
-            TensorDataset(all_input_ids, all_attention_mask, all_token_type_ids, all_label_ids), batch_size=batch_size
+            TensorDataset(all_input_ids, all_attention_mask, all_token_type_ids, all_label_ids),
+            batch_size=batch_size, shuffle=shuffle,
         )
 
     def validation_step(self, batch, batch_nb):
@@ -153,7 +156,11 @@ class NERTransformer(BaseTransformer):
         # when stable
         ret, preds, targets = self._eval_end(outputs)
         logs = ret["log"]
-        return {"val_loss": logs["val_loss"], "log": logs, "progress_bar": logs}
+
+        correction_acc = self.calculate_correction_acc(preds, targets, 'dev')
+
+        return {"correction_acc": torch.Tensor([correction_acc]),
+                "val_loss": logs["val_loss"], "log": logs, "progress_bar": logs}
 
     def test_epoch_end(self, outputs):
         # updating to test_epoch_end instead of deprecated test_end
@@ -163,8 +170,24 @@ class NERTransformer(BaseTransformer):
         # https://github.com/PyTorchLightning/pytorch-lightning/blob/master/\
         # pytorch_lightning/trainer/logging.py#L139
         logs = ret["log"]
+
+        correction_acc = self.calculate_correction_acc(predictions, targets, 'test')
+
         # `val_loss` is the key returned by `self._eval_end()` but actually refers to `test_loss`
-        return {"avg_test_loss": logs["val_loss"], "log": logs, "progress_bar": logs}
+        return {"correction_acc": torch.Tensor([correction_acc]),
+                "avg_test_loss": logs["val_loss"], "log": logs, "progress_bar": logs}
+
+    def calculate_correction_acc(self, predictions, targets, dataset_type='dev'):
+        with open(os.path.join(self.hparams.output_dir, 'tmp_labeling_hyps.txt'), 'w') as predictions_file:
+            for seq_predictions in predictions:
+                predictions_file.write('\n'.join(seq_predictions) + '\n\n')
+
+        tokens_labels_file_path = os.path.join(self.hparams.data_dir,
+                                               (dataset_type if dataset_type != 'dev' else 'valid') + '.txt')
+        acc = calculate_correction_acc(tokens_labels_file_path, predictions)
+
+        print('acc:', acc)
+        return acc
 
     @staticmethod
     def add_model_specific_args(parser, root_dir):
@@ -198,6 +221,12 @@ class NERTransformer(BaseTransformer):
             "--overwrite_cache", action="store_true", help="Overwrite the cached training and evaluation sets"
         )
 
+        parser.add_argument(
+            "--model_for_prediction",
+            default='',
+            type=str
+        )
+
         return parser
 
 
@@ -206,14 +235,32 @@ if __name__ == "__main__":
     add_generic_args(parser, os.getcwd())
     parser = NERTransformer.add_model_specific_args(parser, os.getcwd())
     args = parser.parse_args()
+
     model = NERTransformer(args)
-    trainer = generic_train(model, args)
+
+    checkpoint_callback = ModelCheckpoint(
+        filepath=os.path.join(args.output_dir, '{epoch},{correction_acc}'),
+        monitor='correction_acc',
+        mode="max",
+        save_top_k=1,
+        period=0,
+    )
+
+    trainer = generic_train(model, args, checkpoint_callback=checkpoint_callback)
 
     if args.do_predict:
         # See https://github.com/huggingface/transformers/issues/3159
         # pl use this format to create a checkpoint:
         # https://github.com/PyTorchLightning/pytorch-lightning/blob/master\
         # /pytorch_lightning/callbacks/model_checkpoint.py#L169
-        checkpoints = list(sorted(glob.glob(os.path.join(args.output_dir, "checkpointepoch=*.ckpt"), recursive=True)))
-        model = model.load_from_checkpoint(checkpoints[-1])
+        if args.model_for_prediction:
+            checkpoints = [args.model_for_prediction]
+        else:
+            checkpoints = list(sorted(glob.glob(os.path.join(args.output_dir, "epoch=*.ckpt"), recursive=True)))
+
+        model = model.load_from_checkpoint(checkpoints[-1], labels=args.labels)
+        model.hparams.data_dir = args.data_dir
+        model.hparams.output_dir = args.output_dir
+        model.hparams.overwrite_cache = args.overwrite_cache
+
         trainer.test(model)
