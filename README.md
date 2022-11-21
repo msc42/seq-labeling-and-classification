@@ -5,8 +5,7 @@ This project was created in my work time as employee of the Karlsruhe Institute 
 This work has been supported by the German Federal Ministry of Education and Research (BMBF) under the project OML (01IS18040A).
 
 ## setup
-```
-./1_setup.sh```
+```./1_setup.sh```
 
 ## training
 sequence classification:
@@ -16,7 +15,7 @@ sequence labeling:
 ```./4_train_seq_labeling.sh```
 
 
-you can skip the training and download the models from https://www.dropbox.com/sh/hovvnj3cky55psi/AAAZHk_OfXjuLAlHeFPoWOAua?dl=0
+you can skip the training and download the models from <https://www.dropbox.com/sh/hovvnj3cky55psi/AAAZHk_OfXjuLAlHeFPoWOAua?dl=0>
 
 ## evaluation
 you can change `MODEL_FOR_PREDICTION` to the model that you want to evaluate
