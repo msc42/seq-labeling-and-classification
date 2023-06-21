@@ -19,11 +19,11 @@ class Mode(str, Enum):
         return self.value
 
 
-def calculate_results(ref_file_path, hyp_file_path, mode, add_number_wrong_before, case_sensitiv=False):
-    total = add_number_wrong_before
-    errors = add_number_wrong_before
-    errors_correction = add_number_wrong_before
-    errors_extraction = add_number_wrong_before
+def calculate_results(ref_file_path, hyp_file_path, mode, add_number_classification_false_negatives, add_number_classification_true_negatives, case_sensitiv=False):
+    total = add_number_classification_false_negatives + add_number_classification_true_negatives
+    errors = add_number_classification_false_negatives
+    errors_correction = add_number_classification_false_negatives
+    errors_extraction = add_number_classification_false_negatives
 
     with open(ref_file_path, 'r') as ref_file, \
             open(hyp_file_path, 'r') as hyp_file:
@@ -115,11 +115,14 @@ if __name__ == '__main__':
     parser.add_argument('hyp_file', type=str)
 
     parser.add_argument('--mode', type=Mode, default=Mode.STAT, choices=tuple(Mode))
-    parser.add_argument('--add_number_wrong_before', type=int, default=0, help='for pipeline approach')
+    parser.add_argument('--add_number_classification_false_negatives',
+                        type=int, default=0, help='for pipeline approach')
+    parser.add_argument('--add_number_classification_true_negatives',
+                        type=int, default=0, help='for pipeline approach')
 
     args = parser.parse_args()
 
-    results = calculate_results(args.ref_file, args.hyp_file, args.mode, args.add_number_wrong_before)
+    results = calculate_results(args.ref_file, args.hyp_file, args.mode, args.add_number_classification_false_negatives, args.add_number_classification_true_negatives)
 
     if args.mode == Mode.STAT:
         print(results)

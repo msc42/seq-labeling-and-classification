@@ -7,36 +7,46 @@ LABEL_PATH=data/seq_labeling/labels.txt
 
 case $1 in
 	'detection_correction_with_classification_and_e2e_seq_labeling')
-		WRONG_VALID=0
-		WRONG_TEST=220
+		FALSE_NEGATIVES_VALID=0
+		TRUE_NEGATIVES_VALID=264
+		FALSE_NEGATIVES_TEST=220
+		TRUE_NEGATIVES_TEST=959
 		MODEL_FOR_PREDICTION="experiments/e2e_seq_labeling.ckpt"
 		DATA_DIR=data/seq_labeling_after_classification
 	;;
 
 	'detection_correction_with_classification_and_seq_labeling')
-		WRONG_VALID=0
-		WRONG_TEST=220
+		FALSE_NEGATIVES_VALID=0
+		TRUE_NEGATIVES_VALID=264
+		FALSE_NEGATIVES_TEST=220
+		TRUE_NEGATIVES_TEST=959
 		MODEL_FOR_PREDICTION="experiments/seq_labeling.ckpt"
 		DATA_DIR=data/seq_labeling_after_classification
 	;;
 
 	'detection_correction_with_e2e_seq_labeling')
-		WRONG_VALID=0
-		WRONG_TEST=0
+		FALSE_NEGATIVES_VALID=0
+		TRUE_NEGATIVES_VALID=0
+		FALSE_NEGATIVES_TEST=0
+		TRUE_NEGATIVES_TEST=0
 		MODEL_FOR_PREDICTION="experiments/e2e_seq_labeling.ckpt"
 		DATA_DIR=data/seq_labeling_e2e
 	;;
 
 	'correction_with_e2e_seq_labeling')
-		WRONG_VALID=0
-		WRONG_TEST=0
+		FALSE_NEGATIVES_VALID=0
+		TRUE_NEGATIVES_VALID=0
+		FALSE_NEGATIVES_TEST=0
+		TRUE_NEGATIVES_TEST=0
 		MODEL_FOR_PREDICTION="experiments/e2e_seq_labeling.ckpt"
 		DATA_DIR=data/seq_labeling
 	;;
 
 	'correction_with_seq_labeling')
-		WRONG_VALID=0
-		WRONG_TEST=0
+		FALSE_NEGATIVES_VALID=0
+		TRUE_NEGATIVES_VALID=0
+		FALSE_NEGATIVES_TEST=0
+		TRUE_NEGATIVES_TEST=0
 		MODEL_FOR_PREDICTION="experiments/seq_labeling.ckpt"
 		DATA_DIR=data/seq_labeling
 	;;
@@ -68,10 +78,10 @@ predict() {
 mv $DATA_DIR/test.txt $DATA_DIR/test_backup.txt
 cp $DATA_DIR/valid.txt $DATA_DIR/test.txt
 predict
-python3 code/error_correction_evaluator.py  --add_number_wrong_before $WRONG_VALID $DATA_DIR/valid.txt $OUTPUT_DIR/tmp_labeling_hyps.txt
-echo "Is WRONG_VALID $WRONG_VALID correct?"
+python3 code/error_correction_evaluator.py --add_number_classification_false_negatives $FALSE_NEGATIVES_VALID --add_number_classification_true_negatives $TRUE_NEGATIVES_VALID $DATA_DIR/valid.txt $OUTPUT_DIR/tmp_labeling_hyps.txt
+echo "Is FALSE_NEGATIVES_VALID $FALSE_NEGATIVES_VALID and TRUE_NEGATIVES_VALID $TRUE_NEGATIVES_VALID correct?"
 
 mv $DATA_DIR/test_backup.txt $DATA_DIR/test.txt
 predict
-python3 code/error_correction_evaluator.py --add_number_wrong_before $WRONG_TEST $DATA_DIR/test.txt $OUTPUT_DIR/tmp_labeling_hyps.txt
-echo "Is WRONG_TEST $WRONG_TEST correct?"
+python3 code/error_correction_evaluator.py --add_number_classification_false_negatives $FALSE_NEGATIVES_TEST --add_number_classification_true_negatives $TRUE_NEGATIVES_TEST $DATA_DIR/test.txt $OUTPUT_DIR/tmp_labeling_hyps.txt
+echo "Is FALSE_NEGATIVES_TEST $FALSE_NEGATIVES_TEST and TRUE_NEGATIVES_TEST $TRUE_NEGATIVES_TEST correct?"
